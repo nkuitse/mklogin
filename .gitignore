@@ -1,0 +1,7 @@
+/build
+/old
+/data
+config.mk
+*~
+*.old
+*.bak

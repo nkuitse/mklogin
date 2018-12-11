@@ -3,7 +3,13 @@
 use strict;
 use warnings;
 
-use lib '/site/lib/perl';
+use constant PROG => 'mklogin';
+use constant ROOT => '/usr/local/mklogin';
+use constant PREFIX => '/usr/local';
+use constant VERSION => '??';
+use constant BUILDDATE => '??';
+
+use lib (PREFIX.'/lib/perl');
 
 use POSIX qw(strftime);
 use Unix::PasswdFile;
@@ -31,6 +37,7 @@ GetOptions(
     'y|do-not-ask' => \$dont_ask,
     'n|dry-run' => \$dryrun,
     'l|list' => sub { $dont_ask = $list = 1 },
+    'v|version' => \&show_version,
 ) or usage;
 usage if @ARGV > 1;
 
@@ -55,11 +62,11 @@ fatal "user account $username already exists here"
     if !$list && getpwnam($username);
 
 # Account types
-my $acsite = Unix::PasswdFile->new('/site/etc/mklogin', 'mode' => 'r', 'locking' => 'none');
+my $acsite = Unix::PasswdFile->new(ROOT.'/type', 'mode' => 'r', 'locking' => 'none');
 
 # Accounts and groups available for use
-my $pwsite = Unix::PasswdFile->new('/site/etc/passwd', 'locking' => 'dotlock');
-my $grsite = Unix::GroupFile->new('/site/etc/group', 'locking' => 'dotlock');
+my $pwsite = Unix::PasswdFile->new(ROOT.'/passwd', 'locking' => 'dotlock');
+my $grsite = Unix::GroupFile->new(ROOT.'/group', 'locking' => 'dotlock');
 
 # Accounts and groups in use on this host
 my $pw = Unix::PasswdFile->new('/etc/passwd', 'mode' => 'r', 'locking' => 'none');
@@ -102,7 +109,8 @@ if (!$dont_ask) {
         print STDERR "That UID is already taken\n";
         undef $user[UID];
     }
-    $user[HOMEDIR] ||= sprintf('/home/%s', $username);
+    $user[HOMEDIR] ||= $username;
+    $user[HOMEDIR] = sprintf($user[HOMEDIR], $username);
     $user[SHELL] ||= '/bin/bash';
     ask(\$user[HOMEDIR], 'Home directory');
     ask(\$user[SHELL], 'Login shell');
@@ -214,12 +222,23 @@ sub max {
     return $n;
 }
 
+sub show_version {
+    printf <<"EOS", PROG, VERSION, ROOT, PREFIX, BUILDDATE;
+%s version %s
+
+data root: %s
+prefix: %s
+build date: %s
+EOS
+    exit 0;
+}
+
 sub usage {
-    print STDERR "usage: mklogin [-ynl] [-t TYPE] [-u UID] [-g GID]\n";
+    print STDERR 'usage: ', PROG, " [-ynl] [-t TYPE] [-u UID] [-g GID]\n";
     exit 1;
 }
 
 sub fatal {
-    print STDERR "mklogin: @_\n";
+    print STDERR PROG, ": @_\n";
     exit 2;
 }

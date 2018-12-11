@@ -1,0 +1,5 @@
+# Edit the following to suit your needs, then `make' to build
+
+PROG = mklogin
+PREFIX = /usr/local
+ROOT = /site/etc/mklogin

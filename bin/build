@@ -1,0 +1,15 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+my %sub = map { split /=/, $_, 2 } @ARGV;
+
+while (<STDIN>) {
+    if (m{^use \s+ constant \s+ ([A-Z_]+) \s+ => \s+ '[^']+';}x) {
+        printf qq{use constant %s => '%s';\n}, $1, $sub{$1} || $1;
+    }
+    else {
+        print;
+    }
+}
