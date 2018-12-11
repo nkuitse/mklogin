@@ -1,0 +1,225 @@
+#!/usr/bin/perl
+
+use strict;
+use warnings;
+
+use lib '/site/lib/perl';
+
+use POSIX qw(strftime);
+use Unix::PasswdFile;
+use Unix::GroupFile;
+use Getopt::Long
+    qw(:config posix_default gnu_compat require_order bundling no_ignore_case);
+
+use constant USERNAME => 0;
+use constant PASSWD   => 1;
+use constant UID      => 2;
+use constant GID      => 3;
+use constant GECOS    => 4;
+use constant HOMEDIR  => 5;
+use constant SHELL    => 6;
+
+sub usage;
+sub fatal;
+
+my ($type, $uid, $gid, $define_only, $dont_ask, $dryrun, $list);
+GetOptions(
+    't|type=s' => \$type,
+    'u|uid=i' => \$uid,
+    'g|gid=i' => \$gid,
+    'd|define-only' => \$define_only,
+    'y|do-not-ask' => \$dont_ask,
+    'n|dry-run' => \$dryrun,
+    'l|list' => sub { $dont_ask = $list = 1 },
+) or usage;
+usage if @ARGV > 1;
+
+if ($> != 0) {
+    fatal "only root is able to create logins" if !$define_only && !$dryrun && !$list;
+}
+
+print STDERR "Dry run -- no changes will be made\n" if $dryrun;
+
+my $username;
+if (@ARGV) {
+    $username = shift @ARGV;
+}
+elsif ($dont_ask) {
+    fatal "username not specified";
+}
+else {
+    ask(\$username, 'Username (e.g., barbara)', undef, qr/^[a-z]+$/);
+}
+
+fatal "user account $username already exists here"
+    if !$list && getpwnam($username);
+
+# Account types
+my $acsite = Unix::PasswdFile->new('/site/etc/mklogin', 'mode' => 'r', 'locking' => 'none');
+
+# Accounts and groups available for use
+my $pwsite = Unix::PasswdFile->new('/site/etc/passwd', 'locking' => 'dotlock');
+my $grsite = Unix::GroupFile->new('/site/etc/group', 'locking' => 'dotlock');
+
+# Accounts and groups in use on this host
+my $pw = Unix::PasswdFile->new('/etc/passwd', 'mode' => 'r', 'locking' => 'none');
+my $gr = Unix::GroupFile->new('/etc/group', 'mode' => 'r', 'locking' => 'none');
+
+my %user;
+foreach my $u ($pwsite->users) {
+    my @u = $pwsite->user($u);
+    $user{$u} = $user{$pwsite->uid($u)} = [$u, @u];
+}
+
+my @user = $pwsite->user($username);
+if (@user && defined $user[USERNAME]) {
+    unshift @user, $username;
+}
+elsif ($list || $dont_ask) {
+    fatal "no such user: $username";
+}
+else {
+    if (!defined $type) {
+        choose(\$type, 'User account type', [
+            map { $_ => $acsite->gecos($_) } sort $acsite->users
+        ]);
+    }
+    @user = ($username, $acsite->user($type));
+    $user[GECOS]   = '';
+    $uid ||= $type eq 'flostaff' ? strftime('%Y', localtime) : $user[UID];
+    while (exists $user{$uid}) {
+        $uid++;
+    }
+    $user[UID] = $user[GID] = $uid;
+}
+
+$user[PASSWD] = 'x';
+if (!$dont_ask) {
+    ask(\$user[GECOS], 'Full name');
+    while (1) {
+        ask(\$user[UID], 'Numeric UID');
+        last if !$user{$user[UID]} || $user{$user[UID]}[USERNAME] eq $username;
+        print STDERR "That UID is already taken\n";
+        undef $user[UID];
+    }
+    $user[HOMEDIR] ||= sprintf('/home/%s', $username);
+    $user[SHELL] ||= '/bin/bash';
+    ask(\$user[HOMEDIR], 'Home directory');
+    ask(\$user[SHELL], 'Login shell');
+}
+$user[GID] = $user[UID];
+
+my @group = ($username, 'x', $user[UID]);
+
+if ($dryrun || $list) {
+    my $pwout = Unix::PasswdFile->new('/dev/null', 'locking' => 'none');
+    my $grout = Unix::GroupFile->new('/dev/null', 'locking' => 'none');
+    print STDERR "/etc/passwd\n" if $list;
+    $pwout->user(@user);
+    $grout->group(@group);
+    print STDERR "User:\n  " if !$list;
+    $pwout->write(\*STDERR);
+    print STDERR "Group:\n  " if !$list;
+    print STDERR "\n/etc/group\n" if $list;
+    $grout->write(\*STDERR);
+    exit 0;
+}
+
+if (!$dont_ask) {
+    $pwsite->user(@user);
+    $pwsite->commit;
+    if (!$grsite->group($username)) {
+        $grsite->group(@group);
+        $grsite->commit;
+    }
+}
+
+if (!$define_only) {
+    add_group(@user) if !getgrnam($username);
+    add_user(@user);
+}
+
+# --- Functions
+
+sub add_group {
+    my ($groupname, $gid) = @_[USERNAME, GID];
+    my @cmd = ('groupadd', -g => $gid, $groupname);
+    system(@cmd) == 0 or fatal "groupadd failed: $?";
+}
+
+sub add_user {
+    my ($username, $uid, $gid) = @_[USERNAME, UID, GID];
+    my @cmd = ('useradd', -u => $uid, -g => $gid);
+    if (-d $_[HOMEDIR]) {
+        push @cmd, '-M';  # Don't create
+    }
+    else {
+        push @cmd, '-m';  # Do create
+    }
+    push @cmd, -d => $_[HOMEDIR];
+    push @cmd, -s => $_[SHELL];
+    push @cmd, -c => $_[GECOS] if length $_[GECOS];
+    push @cmd, $username;
+    system(@cmd) == 0 or fatal "useradd failed: $?";
+}
+
+sub ask {
+    my ($destref, $prompt, $def, $regexp) = @_;
+    $def = $$destref if !defined $def;
+    $prompt .= " [$def]" if defined $def;
+    $prompt .= ': ';
+    while (1) {
+        print STDERR $prompt;
+        my $ans = <STDIN>;
+        fatal 'cancelled' if !defined $ans;
+        chomp $ans;
+        $$destref = $def, return if $ans eq '' && defined $def;
+        $$destref = $ans, return if !$regexp || $ans =~ $regexp;
+        print STDERR "  => That's not a valid answer; try again.\n";
+    }
+}
+
+sub choose {
+    my ($destref, $prompt, $choices, $def) = @_;
+    my $i = 0;
+    my %val2label = @$choices;
+    my %i2val = map { ++$i => $_ } keys %val2label;
+    my %val2i = reverse %i2val;
+    if (defined $def) {
+        my $d = $val2i{$def} or fatal 'internal error';
+        $prompt .= " [$d]";
+    }
+    $prompt .= ":\n";
+    foreach (1..$i) {
+        my $val = $i2val{$_};
+        my $label = $val2label{$val};
+        printf STDERR "%4d %s\n", $_, $label;
+    }
+    while (1) {
+        ask(\my $j, "Your choice (1-$i)", undef, qr/^[1-9]+$/);
+        if ($j >= 1 && $j <= $i) {
+            $$destref = $i2val{$j};
+            return;
+        }
+        print STDERR "  => That's not a valid answer; try again.\n";
+        next;
+    }
+}
+
+sub max {
+    my $n = 0;
+    foreach (@_) {
+        $n = $_ if $_ > $n;
+    }
+    return $n;
+}
+
+sub usage {
+    print STDERR "usage: mklogin [-ynl] [-t TYPE] [-u UID] [-g GID]\n";
+    exit 1;
+}
+
+sub fatal {
+    print STDERR "mklogin: @_\n";
+    exit 2;
+}
