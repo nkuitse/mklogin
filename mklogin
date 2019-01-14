@@ -28,9 +28,10 @@ use constant SHELL    => 6;
 sub usage;
 sub fatal;
 
-my ($type, $uid, $gid, $define_only, $dont_ask, $dryrun, $list);
+my ($type, $uid, $gid, $define_only, $dont_ask, $add_type, $dryrun, $list);
 GetOptions(
     't|type=s' => \$type,
+    'a|add-type=s' => sub { $type = $_[1]; $define_only = $add_type = 1 },
     'u|uid=i' => \$uid,
     'g|gid=i' => \$gid,
     'd|define-only' => \$define_only,
@@ -48,7 +49,10 @@ if ($> != 0) {
 print STDERR "Dry run -- no changes will be made\n" if $dryrun;
 
 my $username;
-if (@ARGV) {
+if ($add_type) {
+    1;
+}
+elsif (@ARGV) {
     $username = shift @ARGV;
 }
 elsif ($dont_ask) {
@@ -59,18 +63,40 @@ else {
 }
 
 fatal "user account $username already exists here"
-    if !$list && getpwnam($username);
+    if !$list && !$add_type && getpwnam($username);
+
+ensure_files_exist(qw(type passwd group));
 
 # Account types
-my $acsite = Unix::PasswdFile->new(ROOT.'/type', 'mode' => 'r', 'locking' => 'none');
+my $acsite = Unix::PasswdFile->new(ROOT.'/type', 'locking' => 'none');
 
 # Accounts and groups available for use
-my $pwsite = Unix::PasswdFile->new(ROOT.'/passwd', 'locking' => 'dotlock');
-my $grsite = Unix::GroupFile->new(ROOT.'/group', 'locking' => 'dotlock');
+my $pwsite = Unix::PasswdFile->new(ROOT.'/passwd', 'locking' => 'none');
+my $grsite = Unix::GroupFile->new(ROOT.'/group', 'locking' => 'none');
 
 # Accounts and groups in use on this host
 my $pw = Unix::PasswdFile->new('/etc/passwd', 'mode' => 'r', 'locking' => 'none');
 my $gr = Unix::GroupFile->new('/etc/group', 'mode' => 'r', 'locking' => 'none');
+
+if ($add_type) {
+    print STDERR "Defaults for user type $type...\n";
+    my @user = $acsite->user($type);
+    fatal "user type $type already exists"
+        if @user && grep { defined } @user;
+    $user[USERNAME] = $type;
+    $user[PASSWD] = 'x';
+    $user[HOMEDIR] = "/home/%s";
+    $user[SHELL] ||= '/sbin/nologin';
+    ask(\$user[GECOS], 'Full name');
+    ask(\$user[UID], 'Numeric UID');
+    $user[GID] = $user[UID];
+    ask(\$user[GID], 'Numeric GID');
+    ask(\$user[HOMEDIR], 'Home directory');
+    ask(\$user[SHELL], 'Login shell');
+    $acsite->user(@user);
+    $acsite->commit;
+    exit 0;
+}
 
 my %user;
 foreach my $u ($pwsite->users) {
@@ -87,12 +113,18 @@ elsif ($list || $dont_ask) {
 }
 else {
     if (!defined $type) {
-        choose(\$type, 'User account type', [
-            map { $_ => $acsite->gecos($_) } sort $acsite->users
-        ]);
+        my @types = sort $acsite->users;
+        if (@types) {
+            choose(\$type, 'User account type', [
+                map { $_ => $acsite->gecos($_) } @types
+            ]);
+        }
+        else {
+            fatal "no defined user types";
+        }
     }
     @user = ($username, $acsite->user($type));
-    $user[GECOS]   = '';
+    $user[GECOS] = '';
     $uid ||= $type eq 'flostaff' ? strftime('%Y', localtime) : $user[UID];
     while (exists $user{$uid}) {
         $uid++;
@@ -143,19 +175,19 @@ if (!$dont_ask) {
 }
 
 if (!$define_only) {
-    add_group(@user) if !getgrnam($username);
-    add_user(@user);
+    create_group(@user) if !getgrnam($username);
+    create_user(@user);
 }
 
 # --- Functions
 
-sub add_group {
+sub create_group {
     my ($groupname, $gid) = @_[USERNAME, GID];
     my @cmd = ('groupadd', -g => $gid, $groupname);
     system(@cmd) == 0 or fatal "groupadd failed: $?";
 }
 
-sub add_user {
+sub create_user {
     my ($username, $uid, $gid) = @_[USERNAME, UID, GID];
     my @cmd = ('useradd', -u => $uid, -g => $gid);
     if (-d $_[HOMEDIR]) {
@@ -169,6 +201,9 @@ sub add_user {
     push @cmd, -c => $_[GECOS] if length $_[GECOS];
     push @cmd, $username;
     system(@cmd) == 0 or fatal "useradd failed: $?";
+}
+
+sub add_type {
 }
 
 sub ask {
@@ -220,6 +255,14 @@ sub max {
         $n = $_ if $_ > $n;
     }
     return $n;
+}
+
+sub ensure_files_exist {
+    foreach (@_) {
+        my $f = ROOT . '/' . $_;
+        next if -f $f;
+        open my $fh, '>>', $f or fatal "open $f: $!";
+    }
 }
 
 sub show_version {
