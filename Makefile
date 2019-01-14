@@ -16,7 +16,7 @@ build/$(PROG): configure mklogin
 	install -d build
 	bin/build PROG=$(PROG) VERSION=$(VERSION) PREFIX=$(PREFIX) ROOT=$(ROOT) BUILDDATE=`date +%F` < mklogin > $@
 
-build-data: build/passwd build/group build/type
+data: build/passwd build/group build/type
 
 build/passwd: data/passwd
 	cp $< $@
@@ -28,13 +28,13 @@ build/type: data/type
 	cp $< $@
 
 data/passwd: /etc/passwd
-	perl -ne 'print if /^[^:]+:x:([0-9]+):/ && $$1 >= 500' $< > $@
+	perl -ne 'print if /^[^:]+:x:([0-9]+):/ && $$1 >= 1000' $< > $@
 
 data/group: /etc/group
-	perl -ne 'print if /^[^:]+:x:([0-9]+):/ && $$1 >= 500' $< > $@
+	perl -ne 'print if /^[^:]+:x:([0-9]+):/ && $$1 >= 1000' $< > $@
 
 data/type:
-	touch build/type
+	touch data/type
 
 clean:
 	rm -Rf build
